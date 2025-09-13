@@ -1,6 +1,8 @@
 import serial
 import time
 import csv
+import logging
+
 from openpyxl import Workbook, load_workbook
 from openpyxl.chart import LineChart, Reference
 from pathlib import Path
@@ -12,7 +14,10 @@ from collections import defaultdict
 UART_PORT = '/dev/ttyS0'      # UART port on Raspberry Pi
 BAUDRATE = 9600               # Communication speed
 SAVE_INTERVAL = 10            # Seconds between writes
-FILENAME_PREFIX = "pressure_readings"  # Base name for log files
+FILENAME_PREFIX = "pressure"  # Base name for log files
+
+logger = logging.getLogger(__name__)
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 # ========================
 # Utility Functions
@@ -25,12 +30,28 @@ def is_float(value: str) -> bool:
     except ValueError:
         return False
 
+def get_usb_mount_point() -> Path | None:
+    """Return the first USB mount point under /media/pi/, or None if not found."""
+    base = Path("/media/pi")
+    if base.exists() and base.is_dir():
+        for sub in base.iterdir():
+            if sub.is_dir():
+                return sub
+    return None
 
-def get_daily_filename(extension: str) -> str:
-    """Generate a filename based on today's date and given extension."""
+def get_daily_filename(extension: str):
     today_str = time.strftime("%Y-%m-%d")
-    return f"{FILENAME_PREFIX}_{today_str}.{extension}"
+    filename = f"{FILENAME_PREFIX}_{today_str}.{extension}"
+    return filename
 
+def get_output_paths(extension: str) -> list[Path]:
+    """Generate a filename based on today's date and given extension, in local path."""
+    filename = get_daily_filename(extension)
+    paths = [str(Path.cwd() / filename)]
+    usb_mount = get_usb_mount_point()
+    if usb_mount:
+        paths.append(str(usb_mount / filename))
+    return paths
 
 def initialize_excel(file_path: str):
     """Create a new Excel file with headers and empty chart area."""
@@ -46,13 +67,11 @@ def initialize_excel(file_path: str):
         
         wb.save(file_path)
 
-
 def load_excel(file_path: str):
     """Load an existing Excel file and return workbook and active sheet."""
     wb = load_workbook(file_path)
     ws = wb.active
     return wb, ws
-
 
 def initialize_csv(file_path: str):
     """Create a new CSV file with headers if it doesn't exist."""
@@ -61,13 +80,11 @@ def initialize_csv(file_path: str):
             writer = csv.writer(f)
             writer.writerow(["Timestamp", "Pressure (bar)"])
 
-
 def append_csv(file_path: str, rows: list):
     """Append multiple rows to a CSV file."""
     with open(file_path, mode='a', newline='') as f:
         writer = csv.writer(f)
         writer.writerows(rows)
-
 
 def update_minute_averages_table(ws):
     """
@@ -120,11 +137,9 @@ def update_minute_averages_table(ws):
     chart.set_categories(cats)
     ws.add_chart(chart, "G2")  # Put chart starting at G2
 
-
 def read_sensor_line(serial_conn: serial.Serial) -> str:
     """Read a single line from the UART connection."""
     return serial_conn.readline().decode('utf-8').strip()
-
 
 def process_sensor_data(line: str):
     """
@@ -145,14 +160,17 @@ def process_sensor_data(line: str):
 # Main Function
 # ========================
 def main():
-    print("Starting UART sensor logger with minute-averaged chart...")
-    print("Press Ctrl+C to stop.")
+    logger.info("Starting UART sensor logger with minute-averaged chart...")
+    logger.info("Press Ctrl+C to stop.")
 
-    current_excel = get_daily_filename("xlsx")
-    current_csv = get_daily_filename("csv")
-    initialize_excel(current_excel)
-    initialize_csv(current_csv)
-    wb, ws = load_excel(current_excel)
+    current_date = time.strftime("%Y-%m-%d")
+    excel_paths = get_output_paths("xlsx")
+    csv_paths = get_output_paths("csv")
+    for path in excel_paths:
+        initialize_excel(path)
+    for path in csv_paths:
+        initialize_csv(path)
+    wb, ws = load_excel(excel_paths[0])
 
     ser = serial.Serial(UART_PORT, baudrate=BAUDRATE, timeout=1)
 
@@ -161,58 +179,69 @@ def main():
 
     try:
         while True:
-            new_excel = get_daily_filename("xlsx")
-            new_csv = get_daily_filename("csv")
+            new_date = time.strftime("%Y-%m-%d")
 
             # Rotate files daily
-            if new_excel != current_excel:
-                print(f"Switching to new daily logs: {new_excel} & {new_csv}")
+            if new_date != current_date:
+                logger.info(f"Switching to new daily logs: {new_date}")
 
                 if readings_buffer:
                     for r in readings_buffer:
                         ws.append(r)
                     update_minute_averages_table(ws)
-                    wb.save(current_excel)
-                    append_csv(current_csv, readings_buffer)
+                    for path in excel_paths:
+                        wb.save(path)
+                    for path in csv_paths:
+                        append_csv(path, readings_buffer)
                     readings_buffer.clear()
-
-                current_excel, current_csv = new_excel, new_csv
-                initialize_excel(current_excel)
-                initialize_csv(current_csv)
-                wb, ws = load_excel(current_excel)
+                
+                current_date = new_date
+                excel_paths = get_output_paths("xlsx")
+                csv_paths = get_output_paths("csv")
+                for path in excel_paths:
+                    initialize_excel(path)
+                for path in csv_paths:
+                    initialize_csv(path)
+                wb, ws = load_excel(excel_paths[0])
 
             line = read_sensor_line(ser)
             if line:
                 data = process_sensor_data(line)
                 if data:
                     timestamp, value = data
-                    print(f"{timestamp} -> {value:.2f} bar")
+                    logger.info(f"{timestamp} -> {value:.2f} bar")
                     readings_buffer.append(data)
                 else:
-                    print(f"Invalid data: {line}")
+                    logger.warning(f"Invalid data: {line}")
 
             if time.time() - last_save_time >= SAVE_INTERVAL and readings_buffer:
                 for r in readings_buffer:
                     ws.append(r)
                 update_minute_averages_table(ws)
-                wb.save(current_excel)
-                append_csv(current_csv, readings_buffer)
-                print(f"Saved {len(readings_buffer)} readings and updated chart.")
+                for path in excel_paths:
+                    wb.save(path)
+                for path in csv_paths:
+                    append_csv(path, readings_buffer)
+                logger.info(f"Saved {len(readings_buffer)} readings and updated chart.")
                 readings_buffer.clear()
                 last_save_time = time.time()
 
             time.sleep(0.1)
 
     except KeyboardInterrupt:
-        print("\nStopping logger...")
+        logger.info("\nStopping monitoring and saving data...")
+    except Exception as e:
+        logger.exception(f"Unexpected error")
     finally:
         if readings_buffer:
             for r in readings_buffer:
                 ws.append(r)
             update_minute_averages_table(ws)
-            wb.save(current_excel)
-            append_csv(current_csv, readings_buffer)
-            print(f"Saved {len(readings_buffer)} readings before exit and updated chart.")
+            for path in excel_paths:
+                wb.save(path)
+            for path in csv_paths:
+                append_csv(path, readings_buffer)
+            logger.info(f"Saved {len(readings_buffer)} readings before exit and updated chart.")
         ser.close()
 
 
