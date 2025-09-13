@@ -30,7 +30,7 @@ def is_float(value: str) -> bool:
     except ValueError:
         return False
 
-def get_usb_mount_point() -> Path | None:
+def get_usb_mount_point():
     """Return the first USB mount point under /media/pi/, or None if not found."""
     base = Path("/media/pi")
     if base.exists() and base.is_dir():
