@@ -55,6 +55,7 @@ def get_output_paths(extension: str) -> list[Path]:
 
 def initialize_excel(file_path: str):
     """Create a new Excel file with headers and empty chart area."""
+    logger.info(f"Initializing Excel file: {file_path}")
     if not Path(file_path).exists():
         wb = Workbook()
         ws = wb.active
@@ -69,12 +70,14 @@ def initialize_excel(file_path: str):
 
 def load_excel(file_path: str):
     """Load an existing Excel file and return workbook and active sheet."""
+    logger.info(f"Loading Excel file: {file_path}")
     wb = load_workbook(file_path)
     ws = wb.active
     return wb, ws
 
 def initialize_csv(file_path: str):
     """Create a new CSV file with headers if it doesn't exist."""
+    logger.info(f"Initializing CSV file: {file_path}")
     if not Path(file_path).exists():
         with open(file_path, mode='w', newline='') as f:
             writer = csv.writer(f)
